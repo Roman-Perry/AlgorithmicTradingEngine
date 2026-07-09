@@ -30,5 +30,94 @@ logger = logging.getLogger("AlgoEngine")
 # Events
 # --------------------------------------------------
 
+class EventType(Enum):
+    MARKET = auto()
+    SIGNAL = auto()
+    ORDER = auto()
+    FILL = auto()
+
+
+class OrderSide(Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(Enum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+
+@dataclass(frozen=True, slots=True)
+class MarketEvent:
+    symbol: str
+    timestamp: float
+    price: float
+    bid: float
+    ask: float
+    volume: float
+    event_type: EventType = field(default=EventType.MARKET, init=False, compare=False)
+
+    @property
+    def mid_price(self) -> float:
+        return (self.bid + self.ask) * 0.5
+    
+    @property
+    def spread(self) -> float:
+        return self.ask - self.bid
+    
+    @property
+    def book_imbalance(self) -> float:
+        denom = self.spread + 1e-12
+        return (self.price - self.mid_price) / denom
+    
+
+@dataclass(frozen=True, slots=True)
+class SignalEvent:
+    symbol: str
+    timestamp: float
+    signal: int
+    strength: float
+    gamma_sig: int 
+    regime_id: int
+    regime_sig: int
+    regime_stb: float
+    ml_sig: int
+    ml_conf: float
+    event_type: EventType = field(default=EventType.SIGNAL, init=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderEvent:
+    symbol: str
+    timestamp: float
+    order_side: OrderSide
+    order_type: OrderType
+    quantity: float
+    order_id: str
+    limit_price: Optional[float] = None
+    event_type: EventType = field(default=EventType.ORDER, init=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FillEvent:
+    symbol: str
+    timestamp: float
+    order_id: str
+    order_side: OrderSide
+    quantity: float
+    fill_price: float
+    commission: float
+    slippage: float
+    event_type: EventType = field(default=EventType.FILL, init=False, compare=False)
+
+
+AnyEvent = MarketEvent | SignalEvent | OrderEvent | FillEvent
+
+
+
+
+
+
+
 
 
