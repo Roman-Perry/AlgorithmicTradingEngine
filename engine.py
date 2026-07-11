@@ -113,6 +113,55 @@ class FillEvent:
 
 AnyEvent = MarketEvent | SignalEvent | OrderEvent | FillEvent
 
+# --------------------------------------------------
+# Data Ingestion
+# --------------------------------------------------
+
+
+class MarketDataSimulator:
+
+    def __init__(
+            self,
+            symbol: str = "SYN",
+            initial_price: float = 150.0,
+            mu: float = 5e-5,
+            sigma_bar: float = 0.0018,
+            kappa: float = 0.08,
+            xi: float = 0.00008,
+            tick_interval: float = 0.05,
+            seed: int = 42
+        ) -> None:
+
+        self.symbol = symbol
+        self.price = initial_price
+        self.mu = mu
+        self.sigma_bar = sigma_bar
+        self.sigma = sigma_bar
+        self.kappa = kappa
+        self.xi = xi
+        self.tick_interval = tick_interval
+        self._rng = np.random.default_rng(seed)
+        self._vol_history: Deque[float] = deque(maxlen=100)
+
+    
+    def _step_vol(self) -> None:
+        dt = self.tick_interval
+        dW2 = self._rng.standard_normal()
+        d_sigma = (
+            self.kappa * (self.sigma_bar - self.sigma) * dt +
+            self.xi * math.sqrt(dt) * dW2
+        )
+        self.sigma = max(1e-5, self.sigma + d_sigma)
+        self._vol_history.append(self.sigma)
+
+    def _next_tick(self) -> MarketEvent:
+        pass
+
+
+
+
+        
+
 
 
 
