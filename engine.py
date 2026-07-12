@@ -155,7 +155,38 @@ class MarketDataSimulator:
         self._vol_history.append(self.sigma)
 
     def _next_tick(self) -> MarketEvent:
-        pass
+        self._step_vol()
+        dt = self.tick_interval
+        dW1 = self._rng.standard_normal()
+
+        # GBM log price
+        log_return = (self.mu - 0.5 * self.sigma ** 2) * dt + self.sigma * math.sqrt(dt) * dW1
+        self.price += math.exp(log_return)
+
+        # Bid-ask spread: base + vol premium
+        half_spread = self.price * (0.00008 + self.sigma * 0.8)
+        bid = self.price - half_spread
+        ask = self.price + half_spread
+
+        # Volume: log-normal with vol-regime scaling
+        vol_scale = 1.0 + 4.0 * (self.sigma / self.sigma_bar - 1.0) * 0.3
+        volume = float(self._rng.lognormal(mean=7.8, sigma=0.7)) * max(0.2, vol_scale)
+
+        return MarketEvent(
+            symbol = self.symbol,
+            timestamp = time.monotonic(),
+            price = round(self.price, 4),
+            bid = round(bid, 4),
+            ask = round(ask, 4),
+            volume = round(volume, 2),
+        )
+    
+    async def stream(self, queue: asyncio.Queue[AnyEvent]) -> None:
+        logger.info(f"[DataFeed] Streaming {self.symbol} price={self.price:.4f}")
+        while True:
+            await queue.put(self._next_tick())
+            await asyncio.sleep(self.tick_interval)
+
 
 
 
