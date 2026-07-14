@@ -187,8 +187,125 @@ class MarketDataSimulator:
             await queue.put(self._next_tick())
             await asyncio.sleep(self.tick_interval)
 
+# --------------------------------------------------
+# Strategy
+# --------------------------------------------------
 
 
+class GammaSignalEngine:
+
+    def __init__(
+            self,
+            window: int = 80,
+            upper_pct: float = 0.82,
+            lower_pct: float = 0.18,
+    ) -> None:
+        self._window = window
+        self._upper_pct = upper_pct
+        self._lower_pct = lower_pct
+        self._iats: Deque[float] = deque(maxlen=window)
+        self._last_ts: Optional[float] = None
+        self._alpha: float = 2.0
+        self._beta: float = 1.0
+        self._signal: int = 0
+        self._strength: float = 0.0
+
+    # Parameter Estimate
+    def _fit_gamma(self, data: np.ndarray) -> Tuple[float, float]:
+        if len(data) < 12 or data.std() < 1e-12:
+            return 2.0, 1.0
+        try:
+            alpha_hat, _loc, scale_hat = stats.gamma.fit(data, floc=0.0)
+        except Exception:
+            return 2.0, 1.0
+        
+    # Public interface
+    def update(self, event: MarketEvent) -> int:
+        now = event.timestamp
+        if self._last_ts is not None:
+            iat = max(1e-9, now - self._last_ts)
+            self._iats.append(iat)
+        self._last_ts = now
+
+        min_obs = self._window // 3
+        if len(self._iats) < min_obs:
+            self._signal = 0
+            self._strength = 0.0
+            return 0
+        
+        arr = np.asarray(self._iats, dtype=np.float64)
+        self._alpha, self._beta = self._fit_gamma(arr)
+
+        # CDF evaluation
+        current_iat = self._iats[-1]
+        scale = 1.0 / self._beta
+        cdf_val = float(stats.gamma.cdf(current_iat, a=self._alpha, scale=scale)) 
+
+        # PDF ratio
+        mode = max(0.0, (self._alpha - 1.0) * scale)
+        pdf_curr = stats.gamma.pdf(current_iat, a=self._alpha, scale=scale)
+        pdf_mode = stats.gamma.pdf(mode, a=self._alpha, scale=scale) if mode > 0 else 1e-10
+        pdf_ratio = pdf_curr / (pdf_mode + 1e-12)
+
+        # Tail conditions
+        in_upper_tail = cdf_val > self._upper_pct and pdf_ratio < 0.40
+        in_lower_tail = cdf_val < self._lower_pct
+
+        if in_upper_tail:
+            self._signal = 1
+        elif in_lower_tail:
+            self._signal = -1
+        else:
+            self._signal = 0
+
+        boundary = self._upper_pct - 0.5
+        self._strength = min(1.0, abs(cdf_val - 0.5) / (boundary + 1e-9))
+        return self._signal
+    
+    @property
+    def strength(self) -> float:
+        return self._strength
+    
+    @property
+    def fitted_alpha(self) -> float:
+        return self._alpha
+
+
+class RegimeClusterEngine:
+
+    REGIME_LABELS: Dict[int, str] = {
+        0: "LowVol-Bull",
+        1: "HighVol-Bear",
+        2: "Sideways",
+    }
+
+    def __init__(
+            self,
+            window: int = 160,
+            n_clusters: int = 3, 
+            refit_every: int = 30,
+    ) -> None:
+        self._window = window
+        self._n_clusters = n_clusters
+        self._refit_every = refit_every
+        self._kmeans = MiniBatchKMeans(
+            n_clusters=n_clusters, random_state=42, n_init=5, batch_size=64
+        )
+        self._scalar = StandardScaler()
+        self._prices: Deque[float] = deque(maxlen=window)
+        self._volumes: Deque[float] = deque(maxlen=window)
+        self._regime_hist: Deque[int] = deque(maxlen=30)
+        self._tick_count: int = 0
+        self._fitted: bool = False
+        self._regime_map: Dict[int, int] = {0: 2, 1: 2, 2: 2}
+        self._current: int = 2
+        self._stability: float = 0.5
+
+        # Regime features
+
+
+        
+        
 
 
         
