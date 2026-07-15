@@ -291,7 +291,7 @@ class RegimeClusterEngine:
         self._kmeans = MiniBatchKMeans(
             n_clusters=n_clusters, random_state=42, n_init=5, batch_size=64
         )
-        self._scalar = StandardScaler()
+        self._scaler = StandardScaler()
         self._prices: Deque[float] = deque(maxlen=window)
         self._volumes: Deque[float] = deque(maxlen=window)
         self._regime_hist: Deque[int] = deque(maxlen=30)
@@ -301,14 +301,82 @@ class RegimeClusterEngine:
         self._current: int = 2
         self._stability: float = 0.5
 
-        # Regime features
+        
+    # Regime features
+    @staticmethod
+    def _rsi(prices: np.ndarray, period: int = 14) -> float:
+        n = len(prices)
+        if n < period + 1:
+            return 50.0
+        deltas = np.diff(prices[-(period + 1):])
+        up = deltas.clip(min=0)
+        down = (-deltas).clip(min=0)
+        avg_up = up.mean() + 1e-12
+        avg_dn = down.mean() + 1e-12
+        return 100.0 - 100.0 / (1 + avg_up / avg_dn)
+    
+    def _feature_row(
+            self,
+            prices: np.ndarray,
+            volumes: np.ndarray,
+            end_idx: int, 
+        ) -> Optional[np.ndarray]:
+        if end_idx < 22:
+            return None
+        p = prices[max(0, end_idx - 22): end_idx + 1]
+        v = volumes[max(0, end_idx - 20): end_idx + 1]
+
+        # Rolling 20-tick realized vol
+        rets = np.diff(np.log(p[-21:]))
+        r_vol = float(np.std(rets)) * math.sqrt(252 * 6.5 * 3600 / 0.05) + 1e-10
+
+        # RSI-14
+        rsi = self._rsi(p[-16:] if len(p) >= 16 else p)
+
+        # Volume ratio 
+        v_ratio = float(v[-1]) / (float(np.mean(v[-20:])) + 1e-9)
+
+        # 5-tick price momentum
+        momentum = (float(p[-1]) / float(p[-6]) - 1.0) * 100.0 if len(p) >= 6 else 0.0
+
+        # 10 tick normalized range
+        p10 = p[-10:] if len(p) >= 10 else p
+        p_rng = (float(np.max(p10)) - float(np.min(p10))) / (float(np.mean(p10)) + 1e-9) * 100.0
+
+        return np.array([r_vol, rsi, v_ratio, momentum, p_rng], dtype=np.float64)
+    
+
+    def _resolve_labels(self) -> None:
+        centers_scaled = self._kmeans.cluster_centers_
+        centers = self._scaler.inverse_transform(centers_scaled)
+        vol_order = np.argsort(centers[:, 0])
+
+        self._regime_map = {
+            int(vol_order[0]): 0,
+            int(vol_order[2]): 1,
+            int(vol_order[1]): 2, 
+        }
+
+    # Public interface
+    
+
+    
+
+
+
+
+
+
+
+    
+
+
 
 
         
-        
 
 
-        
+
 
 
 
