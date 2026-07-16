@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
@@ -358,7 +359,113 @@ class RegimeClusterEngine:
         }
 
     # Public interface
+    def update(self, event: MarketEvent) -> int:
+        self._prices.append(event.price)
+        self._volumes.append(event.volume)
+        self._tick_count += 1
+
+        prices = np.asarray(self._prices, dtype=np.float64)
+        volumes = np.asarray(self._volumes, dtype=np.float64)
+
+        if self._tick_count % self._refit_every == 0 or not self._fitted:
+            X_rows: List[np.ndarray] = []
+            for i in range(22, len(prices)):
+                row = self._feature_row(prices, volumes, i)
+                if row is not None:
+                    X_rows.append(row)
+            if len(X_rows) >= self._n_clusters * 4:
+                X = np.vstack(X_rows)
+                X_scaled = self._scaler.fit_transform(X)
+                self._kmeans.partial_fit(X_scaled)
+                self._fitted = True
+                self._resolve_labels()
+
+        if not self._fitted:
+            return self._current
+        
+        idx = len(prices) - 1
+        row = self._feature_row(prices, volumes, idx)
+        if row is None:
+            return self._current
+        
+        row_scaled = self._scaler.transform(row.reshape(1, -1))
+        raw_label = int(self._kmeans.predict(row_scaled)[0])
+        regime = self._regime_map.get(raw_label, 2)
+
+        self._current = regime
+        self._regime_hist.append(regime)
+
+        if len(self._regime_hist) >= 5:
+            self._stability = sum(r == regime for r in self._regime_hist) / len(self._regime_hist)
+
+        return self._current
     
+    @property
+    def regime_signal(self) -> int:
+        return {0: 1, 1: -1, 2: 0}[self._current]   
+
+    @property
+    def stability(self) -> float:
+        return self._stability
+
+    @property
+    def current_regime(self) -> int:
+        return self._current
+    
+
+class SupervisedPredictionEngine:
+    
+    def __init__(
+            self,
+            window: int = 200,
+            lookahead: int = 4,
+            refit_every: int = 40,
+            min_fit_samples: int = 90,
+            n_estimators: int = 60,
+    ) -> None:
+        
+        self._window = window
+        self._lookahead = lookahead
+        self.refit_every = refit_every
+        self._min_fit_samples = min_fit_samples
+        self._n_estimators = n_estimators
+        self._model = GradientBoostingClassifier(
+            n_estimators=n_estimators,
+            max_depth=3,
+            learning_rate=0.08,
+            subsample=0.80,
+            max_features="sqrt",
+            random_state=7,
+        )
+        self._scaler = StandardScaler()
+        self._prices: Deque[float] = deque(maxlen=window)
+        self._bids: Deque[float] = deque(maxlen=window)
+        self._asks: Deque[float] = deque(maxlen=window)
+        self._volumes: Deque[float] = deque(maxlen=window)
+        self._regimes: Deque[int] = deque(maxlen=window)
+        self._tick_n: int = 0
+        self._fitted: bool = False
+        self._signal: int = 0
+        self._conf: float = 0.34
+
+    # Feature engineering
+    @staticmethod
+    def _build_fvec(
+        prices: np.ndarray,
+        bids: np.ndarray,
+        asks: np.ndarray,
+        volumes: np.ndarray,
+        regimes: np.ndarray,
+        idx: int,
+    ) -> Optional[np.ndarray]:
+        if idx < 21:
+            return None
+        
+        
+
+
+
+
 
     
 
