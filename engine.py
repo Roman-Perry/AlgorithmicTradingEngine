@@ -582,32 +582,118 @@ class SupervisedPredictionEngine:
     
 
 class MetaEnsemble:
-    pass
 
+    BASE_W_GAMMA: float = 0.25
+    BASE_W_REGIME: float = 0.35
+    BASE_W_SUPERVISED: float = 0.40
+    THRESHOLD: float = 0.28
+
+    def combine(
+            self,
+            gamma_sig: float,
+            gamma_strength: float,
+            gamma_alpha: float,
+            regime_sig: int,
+            regime_stab: float,
+            ml_sig: int,
+            ml_conf: float,
+    ) -> Tuple[int, float]:
+        w_g = self.BASE_W_GAMMA
+        w_r = self.BASE_W_REGIME
+        w_ml = self.BASE_W_SUPERVISED
+
+        # Stability modulation
+        stab_delta = (regime_stab - 0.50) * 0.40
+        w_r += stab_delta * 0.6
+        w_ml += stab_delta * 0.40
+        w_g += stab_delta * 0.50
+
+        # ML conf
+        if ml_conf > 0.55:
+            conf_boost = (ml_conf - 0.55) * 0.50
+            w_ml += conf_boost
+            w_g -= conf_boost * 0.40
+            w_r -= conf_boost * 0.60
+
+        # Gamma sharpness
+        if gamma_alpha > 4.0:
+            alpha_boost = min(0.10, (gamma_alpha - 4.0) * 0.02)
+            w_g += alpha_boost
+            w_r -= alpha_boost * 0.5
+            w_ml -= alpha_boost * 0.5
+
+        # Clamp and normalize
+        w_g = max(0.05, w_g)
+        w_r = max(0.05, w_r)
+        w_ml = max(0.05, w_ml)
+        total = w_g + w_r + w_ml
+        w_g /= total; w_r /= total; w_ml /= total
+        
+        # Weighted vote
+        W = w_g * gamma_sig + w_r * regime_sig + w_ml * ml_sig
+
+        # Threshold decision
+        if W > self.THRESHOLD:
+            sig = 1
+        elif W < -self.THRESHOLD:
+            sig = -1
+        else:
+            sig = 0
+
+        strength = min(1.0, abs(W)) / (self.THRESHOLD + 1e-9) * 0.5
+        return sig, strength
+    
+
+class MultiStrategyPipeline:
+
+    def __init__(self) -> None:
+        self._gamma = GammaSignalEngine(window=80, upper_pct=0.82, lower_pct=0.18)
+        self._regime = RegimeClusterEngine(window=160, refit_every=30)
+        self._supervised = SupervisedPredictionEngine(window=200, lookahead=4, refit_every=40)
+        self._ensemble = MetaEnsemble()
+
+    def process(self, event: MarketEvent) -> SignalEvent:
+        gamma_sig = self._gamma.update(event)
+        gamma_str = self._gamma.strength
+        gamma_alph = self._gamma.fitted_alpha
+
+        regime_id = self._regime.update(event)
+        regime_sig = self._regime.regime_signal
+        regime_stb = self._regime.stability
+
+        ml_sig = self._supervised.update(event, regime_id)
+        ml_conf = self._supervised.confidence
+
+        final_sig, strength = self._ensemble.combine(
+            gamma_sig=gamma_sig,
+            gamma_strength=gamma_str,
+            gamma_alpha=gamma_alph,
+            regime_sig=regime_sig,
+            regime_stab=regime_stb,
+            ml_sig=ml_sig,
+            ml_conf=ml_conf,
+        )
+
+        return SignalEvent(
+            symbol=event.symbol,
+            timestamp=event.timestamp,
+            signal=final_sig,
+            strength=strength,
+            gamma_sig=gamma_sig,
+            regime_id=regime_id,
+            regime_sig=regime_sig,
+            regime_stb=regime_stb,
+            ml_sig=ml_sig,
+            ml_conf=ml_conf,
+        )
+    
+# --------------------------------------------------
+# Risk Engine
+# --------------------------------------------------
 
                 
             
                 
-
-
-    
-
-
-
-
-
-
-
-    
-
-
-
-
-        
-
-
-
-
 
 
 
