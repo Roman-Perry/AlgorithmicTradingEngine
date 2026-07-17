@@ -461,10 +461,133 @@ class SupervisedPredictionEngine:
         if idx < 21:
             return None
         
+        p = prices[:idx + 1]
+        b = bids[:idx + 1]
+        a = asks[:idx + 1]
+        v = volumes[:idx + 1]
+
+        # Lagged returns
+        lag_rets: List[float] = []
+        for lag in (1, 2, 3, 4, 5, 10):
+            if len(p) > lag:
+                lag_rets.append((p[-1] / p[-1 - lag] - 1.0) * 1_000.0)
+            else: 
+                lag_rets.append(0.0)
+
+        # Order book imbalance
+        spread = a[-1] - b[-1]
+        mid = (a[-1] + b[-1]) * 0.5
+        imbalance = (p[-1] - mid) / (spread + 1e-12)
+
+        # Volume ratio
+        v_mean = np.mean(v[-20:]) if len(v) >= 20 else v[-1]
+        v_ratio = float(v[-1]) / (float(v_mean) + 1e-9)
+
+        # Rolling realized vol
+        if len(p) >= 11:
+            r10 = np.diff(np.log(p[-11:]))
+            r_vol = float(np.std(r10)) * 1_000.0
+        else:
+            r_vol = 0.0
+
+        # Regime id
+        regime = float(regimes[idx]) if idx < len(regimes) else 1.0
+
+        # Price acceleration
+        if len(p) >= 3:
+            r1 = float(p[-1]) - float(p[-2])
+            r2 = float(p[-2]) - float(p[-3])
+            accel = (r1 - r2) * 1_000.0
+        else:
+            accel = 0.0
+
+        return np.array(lag_rets + [imbalance, v_ratio, r_vol, regime, accel], dtype=np.float64)
+    
+    # Dataset construction
+    def _build_dataset(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        n = len(self._prices)
+        if n < self._min_fit_samples + self._lookahead:
+            return None, None
         
+        prices = np.asarray(self._prices, dtype=np.float64)
+        bids = np.asarray(self._bids, dtype=np.float64)
+        asks = np.asarray(self._asks, dtype=np.float64)
+        volumes = np.asarray(self._volumes, dtype=np.float64)
+        regimes = np.asarray(self._regimes, dtype=np.float64)
+
+        X_rows: List[np.ndarray] = []
+        y_vals: List[int] = []
+
+        for i in range(21, n - self._lookahead):
+            fv = self._build_fvec(prices, bids, asks, volumes, regimes, i)
+            if fv is None:
+                continue
+            fwd_ret = prices[i + self._lookahead] / prices[i] - 1.0
+            if fwd_ret > 8e-5:
+                y_vals.append(1)
+            elif fwd_ret < -8e-5:
+                y_vals.append(-1)
+            else:
+                y_vals.append(0)
+            X_rows.append(fv)
+
+        if len(X_rows) < self._min_fit_samples:
+            return None, None
+
+        return np.vstack(X_rows), np.asarray(y_vals, dtype=np.int64)
+    
+    # Public interface
+    def update(self, event: MarketEvent, regime: int) -> int:
+        self._prices.append(event.price)
+        self._bids.append(event.bid)
+        self._asks.append(event.ask)
+        self._volumes.append(event.volume)
+        self._regimes.append(regime)
+        self._tick_n += 1
+
+        # refit
+        if self._tick_n % self._refit_every == 0:
+            X, y = self._build_dataset()
+            if X is not None and y is not None:
+                classes = np.unique(y)
+                if len(classes) >= 2:
+                    X_sc = self._scaler.fit_transform(X)
+                    self._model.fit(X_sc, y)
+                    self._fitted = True
+        if not self._fitted:
+            return 0
+        
+        # Prediction
+        prices = np.asarray(self._prices, dtype=np.float64)
+        bids = np.asarray(self._bids, dtype=np.float64)
+        asks = np.asarray(self._asks, dtype=np.float64)
+        volumes = np.asarray(self._volumes, dtype=np.float64)
+        regimes = np.asarray(self._regimes, dtype=np.float64)
+
+        idx = len(prices) - 1
+        fv = self._build_fvec(prices, bids, asks, volumes, regimes, idx)
+        if fv is None:
+            return 0
+        fv_sc = self._scaler.transform(fv.reshape(1, -1))
+        pred = int(self._model.predict(fv_sc)[0])
+        proba = self._model.predict_proba(fv_sc)[0]
+        self._conf = float(proba.max())
+        self._signal = pred
+        
+        return pred
+    
+    @property
+    def confidence(self) -> float:
+        return self._conf
+    
+
+class MetaEnsemble:
+    pass
 
 
-
+                
+            
+                
 
 
     
