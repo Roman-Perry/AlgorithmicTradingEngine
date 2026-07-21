@@ -691,6 +691,88 @@ class MultiStrategyPipeline:
 # Risk Engine
 # --------------------------------------------------
 
+class RiskEngine:
+
+    def __init__(
+        self,
+        initial_capital: float = 100_000.0,
+        max_drawdown_pct: float = 0.15,
+        kelly_fraction: float = 0.25,
+        max_position_pct: float = 0.20,
+        margin_req: float = 0.10,
+    ) -> None:
+        self._capital0 = initial_capital
+        self._max_dd = max_drawdown_pct
+        self._kelly_f = kelly_fraction
+        self._max_pos_pct = max_position_pct
+        self._margin_req = margin_req
+        self._peak_equity = initial_capital
+        self._win_count = 0
+        self._loss_count = 0
+        self._avg_win = 0.0
+        self._avg_loss = 0.0
+
+    def kelly_position(self, equity: float, price: float) -> float:
+        n_trades = self._win_count + self._loss_count
+        if n_trades < 10:
+            dollar_risk = equity * 0.010
+            return max(1.0, math.floor(dollar_risk / price))
+        
+        p = self._win_count / n_trades
+        q = 1.0 - p
+        b = (self._avg_win / (self._avg_loss + 1e-9))
+
+        kelly_f_raw = (p * b - q) / (b + 1e-9)
+        kelly_f_clip = max(0.005, min(0.25, kelly_f_raw))
+        pos_frac = kelly_f_clip * self._kelly_f
+
+        dollar_alloc = min(equity * pos_frac, equity * self._max_pos_pct)
+        return max(1.0, math.floor(dollar_alloc / price))
+    
+    def record_trade(self, pnl: float) -> None:
+        if pnl > 0.0:
+            self._win_count += 1
+            n = self._win_count
+            self._avg_win = self._avg_win * (n - 1) / n + pnl / n
+        elif pnl < 0.0:
+            self._loss_count += 1
+            n = self._loss_count
+            self._avg_loss = self._avg_loss * (n - 1) / n + abs(pnl) / n
+
+    def drawdown_breached(self, equity: float) -> bool:
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+        dd = (self._peak_equity - equity) / (self._peak_equity + 1e-9)
+        return dd >= self._max_dd
+    
+    def margin_ok(self, position_value: float, equity: float) -> bool:
+        required = position_value * self._margin_req
+        return equity >= required
+    
+    @property
+    def win_rate(self) -> float:
+        n = self._win_count + self._loss_count
+        return self._win_count / n if n > 0 else 0.0
+    
+    @property
+    def profit_factor(self) -> float:
+        denom = self._loss_count * self._avg_loss
+        numer = self._win_count * self._avg_win
+        return numer / (denom + 1e-9)
+    
+# --------------------------------------------------
+# Portfolio Engine
+# --------------------------------------------------
+
+
+    
+
+
+    
+
+
+
+
                 
             
                 
