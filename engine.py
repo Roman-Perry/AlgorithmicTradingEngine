@@ -712,7 +712,7 @@ class RiskEngine:
         self._avg_win = 0.0
         self._avg_loss = 0.0
 
-    def kelly_position(self, equity: float, price: float) -> float:
+    def kelly_position_size(self, equity: float, price: float) -> float:
         n_trades = self._win_count + self._loss_count
         if n_trades < 10:
             dollar_risk = equity * 0.010
@@ -764,20 +764,121 @@ class RiskEngine:
 # Portfolio Engine
 # --------------------------------------------------
 
+@dataclass()
+class Position:
+    symbol: str
+    quantity: float = 0.0
+    avg_cost: float = 0.0
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
 
+    def mark_to_market(self, price: float) -> None:
+        self.unrealized_pnl = (price - self.avg_cost) * self.quantity
+
+    def open_long(self, qty: float, price: float) -> None:
+        new_total_cost = self.avg_cost * max(0.0, self.quantity) + price * qty
+        self.quantity = max(0.0, self.quantity) + qty
+        self.avg_cost = new_total_cost / self.quantity if self.quantity > 0 else price
+
+    def close_long(self, qty: float, price: float) -> float:
+        qty_closed = min(qty, self.quantity)
+        pnl = (price - self.avg_cost) * qty_closed
+        self.realized_pnl += pnl
+        self.quantity -= qty_closed
+        if self.quantity <= 0.0:
+            self.quantity = 0.0
+            self.avg_cost = 0.0
+        return pnl
+    
+    def open_short(self, qty: float, price: float) -> None:
+        existing_short = max(0.0, -self.quantity)
+        new_total_cost = self.avg_cost * existing_short + price * qty
+        self.quantity = -(existing_short + qty)
+        self.avg_cost = new_total_cost / (existing_short + qty) if (existing_short + qty) > 0 else price
+
+    def close_short(self, qty: float, price: float) -> float:
+        qty_covered = min(qty, abs(self.quantity))
+        pnl = (self.avg_cost - price) * qty_covered
+        self.realized_pnl += pnl
+        self.quantity += qty_covered
+        if self.quantity >= 0.0:
+            self.quantity = 0.0
+            self.avg_cost = 0.0
+        return pnl
     
 
+class PortfolioEngine:
 
+    def __init__(self, initial_capital: float = 100_000.0) -> None:
+        self._cash: float = initial_capital
+        self._initial_capital = initial_capital
+        self._positions: Dict[str, Position] = {}
+        self._equity_curve: List[float] = [initial_capital]
+        self._trade_log: List[Dict[str, Any]] = []
+        self._risk = RiskEngine(initial_capital=initial_capital)
+        self._halted: bool = False
+
+    @property
+    def total_equity(self) -> float:
+        unrealized = sum(p.unrealized_pnl for p in self._positions.values())
+        realized = sum(p.realized_pnl for p in self._positions.values())
+        return self._cash + realized + unrealized
     
+    def get_position(self, symbol: str) -> Position:
+        if symbol not in self._positions:
+            self._positions[symbol] = Position(symbol=symbol)
+        return self._positions[symbol]
+    
+    # Event handlers
+    def on_market(self, event: MarketEvent) -> None:
+        self.get_position(event.symbol).mark_to_market(event.mid_price)
 
+    def on_fill(self, fill: FillEvent) -> None:
+        pos = self.get_position(fill.symbol)
+        pnl_realized: float = 0.0
 
+        if fill.order_side == OrderSide.BUY:
+            if pos.quantity < 0:
+                cover_qty = min(fill.quantity, abs(pos.quantity))
+                pnl_realized += pos.close_short(cover_qty, fill.fill_price)
+                remainder = fill.quantity - cover_qty
+                if remainder > 1e-6:
+                    pos.open_long(remainder, fill.fill_price)
+            else:
+                pos.open_long(fill.quantity, fill.fill_price)
+            self._cash -= fill.fill_price * fill.quantity + fill.commission
+        else:
+            if pos.quantity > 0:
+                close_qty = min(fill.quantity, pos.quantity)
+                pnl_realized += pos.close_long(close_qty, fill.fill_price)
+                remainder = fill.quantity - close_qty
+                if remainder > 1e-6:
+                    pos.open_short(remainder, fill.fill_price)
+            else:
+                pos.open_short(fill.quantity, fill.fill_price)
+            self._cash += fill.fill_price * fill.quantity - fill.commission
 
+        if abs(pnl_realized) > 1e-8:
+            self._risk.record_trade(pnl_realized)
 
-                
-            
-                
+        self._trade_log.append({
+            "ts": fill.timestamp,
+            "symbol": fill.symbol,
+            "side": fill.order_side.value,
+            "qty": fill.quantity,
+            "price": fill.fill_price,
+            "commission": fill.commission,
+            "slippage": fill.slippage,
+            "pnl": pnl_realized,        
+            })
+        self._equity_curve.append(self.total_equity)
 
+        if self._risk.drawdown_breached(self.total_equity):
+            logger.warning("[RiskEngine] MAX DRAWDOWN BREACHED - Trading halted")
+            self._halted = True
 
+    def order_size(self, symbol: str, price: float) -> float:
+        return self._risk.kelly_position_size(self.total_equity, price)
 
 
 
